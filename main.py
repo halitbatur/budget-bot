@@ -1,5 +1,8 @@
 """Budget Bot - Main entry point."""
+import asyncio
 import logging
+import os
+from aiohttp import web
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 from config import TELEGRAM_BOT_TOKEN, validate_config
@@ -27,8 +30,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main():
-    """Start the bot."""
+async def health_check(request):
+    """Health check endpoint for Cloud Run."""
+    return web.Response(text="OK", status=200)
+
+
+async def start_web_server():
+    """Start aiohttp web server for health checks."""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    port = int(os.environ.get('PORT', 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    logger.info(f"Health check server started on port {port}")
+    return runner
+
+
+async def start_bot():
+    """Start the Telegram bot."""
     # Validate configuration
     validate_config()
     
@@ -59,10 +83,34 @@ def main():
     
     logger.info("Bot is ready! Press Ctrl+C to stop.")
     
-    # Start polling
-    application.run_polling(allowed_updates=["message", "callback_query"])
+    # Initialize and start polling
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=["message", "callback_query"])
+    
+    return application
+
+
+async def main():
+    """Run both web server and bot concurrently."""
+    # Start web server for health checks
+    web_runner = await start_web_server()
+    
+    # Start Telegram bot
+    application = await start_bot()
+    
+    try:
+        # Keep running forever
+        while True:
+            await asyncio.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Shutting down...")
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        await web_runner.cleanup()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 
